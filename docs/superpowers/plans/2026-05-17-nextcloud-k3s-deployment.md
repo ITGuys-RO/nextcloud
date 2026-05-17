@@ -651,9 +651,9 @@ nextcloud:
     - name: OVERWRITEPROTOCOL
       value: "https"
     - name: OVERWRITEHOST
-      value: "nextcloud.itguys.ro"
+      value: "nextcloud.itguys.ro:30444"     # MUST include the NodePort — no :443 listener exists
     - name: OVERWRITECLIURL
-      value: "https://nextcloud.itguys.ro"
+      value: "https://nextcloud.itguys.ro:30444"
     - name: PHP_MEMORY_LIMIT
       value: "1024M"
     - name: PHP_UPLOAD_LIMIT
@@ -711,6 +711,8 @@ nodeSelector:
 startupProbe:
   enabled: true
 
+# No memory limit: PHP_MEMORY_LIMIT=1024M per worker; burst is acceptable on
+# asus (single/small-team use). Add limits.memory if the node shows OOM pressure.
 resources:
   requests:
     cpu: 250m
