@@ -1,0 +1,60 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nextcloud-backup
+  namespace: nextcloud
+spec:
+  schedule: "0 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          nodeSelector:
+            kubernetes.io/hostname: asus-laptop
+          containers:
+            - name: backup
+              image: alpine:3.21
+              env:
+                - name: MARIADB_ROOT_PASSWORD
+                  valueFrom: { secretKeyRef: { name: nextcloud-db, key: mariadb-root-password } }
+              command:
+                - sh
+                - -euc
+                - |
+                  apk add --no-cache mariadb-client rsync openssh-client gzip >/dev/null
+                  TS=$(date +%F)
+                  mkdir -p /backups/db
+                  echo "[backup] dumping DB"
+                  mariadb-dump --single-transaction --quick --routines --triggers \
+                    -h nextcloud-mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" nextcloud \
+                    | gzip > "/backups/db/db-$TS.sql.gz"
+                  echo "[backup] capturing config.php"
+                  cp /nc-data/config/config.php "/backups/db/config-$TS.php"
+                  echo "[backup] pruning local copies older than 7 days"
+                  find /backups/db -name 'db-*.sql.gz' -mtime +7 -delete
+                  find /backups/db -name 'config-*.php' -mtime +7 -delete
+                  echo "[backup] rsync data + latest dump off-node to acer-laptop"
+                  install -m600 /ssh/id_ed25519 /tmp/id
+                  SSHOPT="-i /tmp/id -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/khosts"
+                  rsync -a --delete -e "ssh $SSHOPT" \
+                    /nc-data/ dustfeather@100.96.0.4:~/backup/nextcloud/data/
+                  rsync -a -e "ssh $SSHOPT" \
+                    "/backups/db/db-$TS.sql.gz" "/backups/db/config-$TS.php" \
+                    dustfeather@100.96.0.4:~/backup/nextcloud/db/
+                  echo "[backup] done"
+              volumeMounts:
+                - { name: ncdata,  mountPath: /nc-data, readOnly: true }
+                - { name: backups, mountPath: /backups }
+                - { name: ssh,     mountPath: /ssh, readOnly: true }
+          volumes:
+            - name: ncdata
+              persistentVolumeClaim: { claimName: nextcloud-data }
+            - name: backups
+              persistentVolumeClaim: { claimName: nextcloud-backups }
+            - name: ssh
+              secret: { secretName: backup-ssh, defaultMode: 0400 }
