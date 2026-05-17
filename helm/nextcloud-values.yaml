@@ -18,9 +18,9 @@ nextcloud:
     - name: OVERWRITEPROTOCOL
       value: "https"
     - name: OVERWRITEHOST
-      value: "nextcloud.itguys.ro:30444"
+      value: "nextcloud.itguys.ro"            # served on default :443 via proxy hostPort (Task 9)
     - name: OVERWRITECLIURL
-      value: "https://nextcloud.itguys.ro:30444"
+      value: "https://nextcloud.itguys.ro"
     - name: PHP_MEMORY_LIMIT
       value: "1024M"
     - name: PHP_UPLOAD_LIMIT

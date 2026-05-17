@@ -24,9 +24,9 @@ data:
         proxy_request_buffering off;
 
         # CalDAV/CardDAV well-known redirects (Nextcloud security scan).
-        # Use $http_host (client Host incl. the :30444 NodePort) — a relative
-        # 301 would drop the port (nginx listens on :443) and break DAVx5/
-        # Apple/Thunderbird autodiscovery against the non-standard external port.
+        # Use $http_host (the client's Host verbatim) so the redirect targets
+        # whatever host[:port] the client used — robust if a non-default port
+        # is ever introduced; correct for DAVx5/Apple/Thunderbird autodiscovery.
         location = /.well-known/carddav { return 301 https://$http_host/remote.php/dav; }
         location = /.well-known/caldav  { return 301 https://$http_host/remote.php/dav; }
 
@@ -50,6 +50,8 @@ metadata:
   namespace: nextcloud
 spec:
   replicas: 1
+  strategy:
+    type: Recreate          # single owner of host :443 — old pod must free it before new binds
   selector:
     matchLabels: { app: nginx-tls-proxy }
   template:
@@ -81,7 +83,10 @@ spec:
                 done ) &
               exec nginx -g 'daemon off;'
           ports:
-            - { name: https, containerPort: 443 }
+            # hostPort 443: pod (pinned to asus, replicas:1) binds the asus
+            # host's :443 directly, so the URL is https://nextcloud.itguys.ro
+            # (no NodePort). nginx master runs as root → may bind privileged 443.
+            - { name: https, containerPort: 443, hostPort: 443 }
           resources:
             requests: { cpu: 25m, memory: 32Mi }
           readinessProbe:
@@ -103,10 +108,9 @@ metadata:
   name: nextcloud-https
   namespace: nextcloud
 spec:
-  type: NodePort
+  type: ClusterIP          # external access is via the pod's hostPort 443 on asus; this Service is in-cluster only
   selector: { app: nginx-tls-proxy }
   ports:
     - name: https
       port: 443
       targetPort: 443
-      nodePort: 30444
