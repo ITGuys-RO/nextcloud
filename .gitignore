@@ -1,0 +1,32 @@
+# ───────────────────────────────────────────────────────────────
+# SECRETS NEVER GET COMMITTED. Commit *.example/*.template only.
+# ───────────────────────────────────────────────────────────────
+secrets/**
+!secrets/README.md
+!secrets/*.example
+!secrets/*.template
+
+# real secret manifests anywhere in the tree
+*-secret.yaml
+*-secret.yml
+*.secret.yaml
+*-sealed*.yaml.dec
+*.dec
+
+# credentials / keys / kubeconfig
+*.key
+*.pem
+*.p12
+*.pfx
+kubeconfig*
+*.kubeconfig
+.env
+.env.*
+!.env.example
+*-token*
+!*-token*.example
+
+# helm/kubectl noise
+charts/
+*.tgz
+.DS_Store
