@@ -22,22 +22,38 @@ spec:
               env:
                 - name: MARIADB_ROOT_PASSWORD
                   valueFrom: { secretKeyRef: { name: nextcloud-db, key: mariadb-root-password } }
+              resources:
+                requests: { cpu: 100m, memory: 256Mi }
               command:
                 - sh
                 - -euc
                 - |
-                  apk add --no-cache mariadb-client rsync openssh-client gzip >/dev/null
+                  apk add --no-cache mariadb-client rsync openssh-client gzip coreutils >/dev/null
                   TS=$(date +%F)
                   mkdir -p /backups/db
+                  # Dump to a temp file FIRST: POSIX sh has no pipefail, so
+                  # `mariadb-dump | gzip` would mask a dump failure (gzip exits 0
+                  # on empty stdin → a valid but EMPTY .gz shipped as "success").
+                  # Writing to a file makes `set -e` abort on dump failure.
                   echo "[backup] dumping DB"
+                  # NOTE: uses MariaDB root (homelab trade-off; a least-priv backup
+                  # user would need SELECT,LOCK TABLES,SHOW VIEW,EVENT,TRIGGER).
                   mariadb-dump --single-transaction --quick --routines --triggers \
-                    -h nextcloud-mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" nextcloud \
-                    | gzip > "/backups/db/db-$TS.sql.gz"
+                    -h nextcloud-mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" nextcloud > /tmp/dump.sql
+                  SZ=$(wc -c < /tmp/dump.sql)
+                  [ "$SZ" -gt 1024 ] || { echo "[backup] FATAL: dump only $SZ bytes — aborting"; exit 1; }
+                  gzip -c /tmp/dump.sql > "/backups/db/db-$TS.sql.gz"
+                  rm -f /tmp/dump.sql
+                  gzip -t "/backups/db/db-$TS.sql.gz"
                   echo "[backup] capturing config.php"
                   cp /nc-data/config/config.php "/backups/db/config-$TS.php"
-                  echo "[backup] pruning local copies older than 7 days"
+                  echo "[backup] pruning LOCAL copies older than 7 days (acer keeps full dump history by design — §4 recovery copy)"
                   find /backups/db -name 'db-*.sql.gz' -mtime +7 -delete
                   find /backups/db -name 'config-*.php' -mtime +7 -delete
+                  # Guard the destructive mirror: if the data PVC mounted empty,
+                  # an `rsync --delete` would wipe the acer recovery copy. config.php
+                  # was just read above, so its absence means /nc-data is bad.
+                  [ -f /nc-data/config/config.php ] || { echo "[backup] FATAL: /nc-data looks empty — refusing to rsync --delete"; exit 1; }
                   echo "[backup] rsync data + latest dump off-node to acer-laptop"
                   install -m600 /ssh/id_ed25519 /tmp/id
                   SSHOPT="-i /tmp/id -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/khosts"
