@@ -1,0 +1,17 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: nextcloud-tls
+  namespace: nextcloud
+spec:
+  secretName: nextcloud-tls
+  duration: 2160h    # 90d
+  renewBefore: 720h  # 30d — auto-renew, no manual action (design §3 TLS)
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  dnsNames:
+    - nextcloud.itguys.ro
+  issuerRef:
+    name: letsencrypt-cloudflare
+    kind: ClusterIssuer
