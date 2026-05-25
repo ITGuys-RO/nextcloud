@@ -1,0 +1,72 @@
+name: PR checks
+
+# Validates manifests + helm chart against the live API server WITHOUT applying.
+# No GH Secrets are consumed; no Secret manifests are rendered.
+
+on:
+  pull_request:
+    paths:
+      - 'helm/**'
+      - 'manifests/**'
+      - '.github/workflows/deploy.yml'
+      - '.github/workflows/pr-checks.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  KUBE_NS: nextcloud
+  HELM_CHART_VERSION: "9.1.0"
+  HELM_REPO_URL: "https://nextcloud.github.io/helm/"
+
+jobs:
+  validate:
+    runs-on: arc-itguys-ro-nextcloud
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+      - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+
+      - name: helm template + server-side dry-run
+        run: |
+          set -euo pipefail
+          helm repo add nextcloud "${HELM_REPO_URL}"
+          helm repo update nextcloud
+          helm template nextcloud nextcloud/nextcloud \
+            --version "${HELM_CHART_VERSION}" \
+            --namespace "${KUBE_NS}" \
+            -f helm/nextcloud-values.yaml \
+            | kubectl apply --dry-run=server -f -
+
+      - name: kubectl --dry-run=server -f manifests (CI-scoped subset)
+        run: |
+          set -euo pipefail
+          for f in \
+            manifests/20-certificate.yaml \
+            manifests/30-mariadb.yaml \
+            manifests/40-valkey.yaml \
+            manifests/50-nextcloud-pvcs.yaml \
+            manifests/70-backup-cronjob.yaml; do
+            echo "::group::dry-run $f"
+            kubectl apply --dry-run=server -f "$f"
+            echo "::endgroup::"
+          done
+
+      - name: kubectl diff (advisory; does not fail the check)
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          for f in \
+            manifests/20-certificate.yaml \
+            manifests/30-mariadb.yaml \
+            manifests/40-valkey.yaml \
+            manifests/50-nextcloud-pvcs.yaml \
+            manifests/70-backup-cronjob.yaml; do
+            echo "::group::diff $f"
+            kubectl diff -f "$f" || true
+            echo "::endgroup::"
+          done

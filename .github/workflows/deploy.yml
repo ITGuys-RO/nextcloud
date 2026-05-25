@@ -1,0 +1,198 @@
+name: Deploy nextcloud
+
+# Push to main → path-filtered apply against the in-cluster k3s API via the
+# runner pod's ServiceAccount (`arc-itguys-ro-nextcloud-gha-rs-no-permission`,
+# bound to Role `nextcloud-deployer` in ns nextcloud and Role `cf-token-writer`
+# in ns cert-manager — see manifests/bootstrap/11-ci-deployer-rbac.yaml).
+#
+# `secrets` always runs (cheap, idempotent). `manifests` and `helm` jobs run
+# only when their respective paths changed (or workflow_dispatch reconcile_all).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'helm/**'
+      - 'manifests/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+    inputs:
+      reconcile_all:
+        description: "Apply everything (helm + manifests + secrets) regardless of paths"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-nextcloud
+  cancel-in-progress: false
+
+env:
+  KUBE_NS: nextcloud
+  HELM_RELEASE: nextcloud
+  HELM_CHART_VERSION: "9.1.0"
+  HELM_REPO_URL: "https://nextcloud.github.io/helm/"
+
+jobs:
+  changes:
+    runs-on: arc-itguys-ro-nextcloud
+    outputs:
+      helm: ${{ steps.f.outputs.helm }}
+      manifests: ${{ steps.f.outputs.manifests }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 2
+      - id: f
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        with:
+          filters: |
+            helm:
+              - 'helm/**'
+              - '.github/workflows/deploy.yml'
+            manifests:
+              - 'manifests/*.yaml'
+              - '!manifests/60-nginx-tls-proxy.yaml'
+
+  secrets:
+    runs-on: arc-itguys-ro-nextcloud
+    steps:
+      - uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+      - name: Verify in-cluster auth
+        run: |
+          set -euo pipefail
+          kubectl auth whoami || kubectl get --raw='/api/v1/namespaces/nextcloud' >/dev/null
+          kubectl auth can-i update secret/cloudflare-api-token -n cert-manager
+          kubectl auth can-i create secret -n nextcloud
+      - name: Render and apply Secret/cloudflare-api-token (cert-manager)
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${CF_API_TOKEN:?missing GH secret CF_API_TOKEN}"
+          # Patch in place (Role permits update only on this name).
+          kubectl -n cert-manager patch secret cloudflare-api-token \
+            --type=merge \
+            -p "{\"stringData\":{\"api-token\":\"${CF_API_TOKEN}\"}}"
+      - name: Render and apply nextcloud-admin
+        env:
+          NEXTCLOUD_ADMIN_USERNAME: ${{ secrets.NEXTCLOUD_ADMIN_USERNAME }}
+          NEXTCLOUD_ADMIN_PASSWORD: ${{ secrets.NEXTCLOUD_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${NEXTCLOUD_ADMIN_USERNAME:?missing}"
+          : "${NEXTCLOUD_ADMIN_PASSWORD:?missing}"
+          kubectl -n "${KUBE_NS}" apply --server-side -f - <<EOF
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: nextcloud-admin
+            namespace: ${KUBE_NS}
+          type: Opaque
+          stringData:
+            nextcloud-username: "${NEXTCLOUD_ADMIN_USERNAME}"
+            nextcloud-password: "${NEXTCLOUD_ADMIN_PASSWORD}"
+          EOF
+      - name: Render and apply nextcloud-db
+        env:
+          MARIADB_ROOT_PASSWORD: ${{ secrets.MARIADB_ROOT_PASSWORD }}
+          MARIADB_USERNAME: ${{ secrets.MARIADB_USERNAME }}
+          MARIADB_PASSWORD: ${{ secrets.MARIADB_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${MARIADB_ROOT_PASSWORD:?missing}"
+          : "${MARIADB_USERNAME:?missing}"
+          : "${MARIADB_PASSWORD:?missing}"
+          kubectl -n "${KUBE_NS}" apply --server-side -f - <<EOF
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: nextcloud-db
+            namespace: ${KUBE_NS}
+          type: Opaque
+          stringData:
+            mariadb-root-password: "${MARIADB_ROOT_PASSWORD}"
+            db-username: "${MARIADB_USERNAME}"
+            db-password: "${MARIADB_PASSWORD}"
+          EOF
+      - name: Render and apply valkey-auth
+        env:
+          VALKEY_PASSWORD: ${{ secrets.VALKEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${VALKEY_PASSWORD:?missing}"
+          kubectl -n "${KUBE_NS}" apply --server-side -f - <<EOF
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: valkey-auth
+            namespace: ${KUBE_NS}
+          type: Opaque
+          stringData:
+            redis-password: "${VALKEY_PASSWORD}"
+          EOF
+      - name: Render and apply backup-ssh
+        env:
+          BACKUP_SSH_PRIVATE_KEY: ${{ secrets.BACKUP_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          : "${BACKUP_SSH_PRIVATE_KEY:?missing}"
+          tmp=$(mktemp)
+          trap 'rm -f "$tmp"' EXIT
+          # Write key to a file so the YAML heredoc can embed it via `|`
+          # without quoting headaches.
+          printf '%s\n' "$BACKUP_SSH_PRIVATE_KEY" > "$tmp"
+          kubectl create secret generic backup-ssh \
+            -n "${KUBE_NS}" \
+            --from-file=id_ed25519="$tmp" \
+            --dry-run=client -o yaml \
+            | kubectl apply --server-side -f -
+
+  manifests:
+    needs: [changes, secrets]
+    if: ${{ needs.changes.outputs.manifests == 'true' || inputs.reconcile_all }}
+    runs-on: arc-itguys-ro-nextcloud
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+      - name: Apply manifests (CI-scoped only; excludes bootstrap/ and shared nginx proxy)
+        run: |
+          set -euo pipefail
+          for f in \
+            manifests/20-certificate.yaml \
+            manifests/30-mariadb.yaml \
+            manifests/40-valkey.yaml \
+            manifests/50-nextcloud-pvcs.yaml \
+            manifests/70-backup-cronjob.yaml; do
+            echo "::group::apply $f"
+            kubectl apply -f "$f"
+            echo "::endgroup::"
+          done
+      - name: Wait for non-chart Deployment rollouts
+        run: |
+          set -euo pipefail
+          kubectl -n "${KUBE_NS}" rollout status deploy/nextcloud-mariadb --timeout=3m
+          kubectl -n "${KUBE_NS}" rollout status deploy/valkey --timeout=2m
+
+  helm:
+    needs: [changes, secrets]
+    if: ${{ needs.changes.outputs.helm == 'true' || inputs.reconcile_all }}
+    runs-on: arc-itguys-ro-nextcloud
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+      - uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+      - name: helm upgrade --install nextcloud
+        run: |
+          set -euo pipefail
+          helm repo add nextcloud "${HELM_REPO_URL}"
+          helm repo update nextcloud
+          helm upgrade --install "${HELM_RELEASE}" nextcloud/nextcloud \
+            --namespace "${KUBE_NS}" \
+            --version "${HELM_CHART_VERSION}" \
+            -f helm/nextcloud-values.yaml \
+            --atomic --timeout 5m
+      - name: Wait for nextcloud rollout
+        run: kubectl -n "${KUBE_NS}" rollout status deploy/nextcloud --timeout=5m
