@@ -1,0 +1,102 @@
+# RBAC for the GitHub Actions self-hosted runner (ARC scale set
+# `arc-itguys-ro-nextcloud`). The runner pod's default SA is
+# `arc-itguys-ro-nextcloud-gha-rs-no-permission` in ns `arc-runners`
+# (named per the gha-runner-scale-set chart convention).
+#
+# This binds that SA to two Roles:
+#  - `nextcloud-deployer` in ns `nextcloud`  → full CRUD on chart + manifest resources
+#  - `cf-token-writer`   in ns `cert-manager` → narrow update of one Secret
+#
+# Applied once by cluster-admin. Not CI-managed (CI can't grant itself rights).
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nextcloud-deployer
+  namespace: nextcloud
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - services
+      - configmaps
+      - secrets
+      - persistentvolumeclaims
+      - serviceaccounts
+      - events
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - statefulsets
+      - replicasets
+      - daemonsets
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources:
+      - roles
+      - rolebindings
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses
+      - networkpolicies
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["policy"]
+    resources:
+      - poddisruptionbudgets
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cert-manager.io"]
+    resources:
+      - certificates
+      - certificaterequests
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nextcloud-deployer
+  namespace: nextcloud
+subjects:
+  - kind: ServiceAccount
+    name: arc-itguys-ro-nextcloud-gha-rs-no-permission
+    namespace: arc-runners
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nextcloud-deployer
+---
+# Narrow Role in ns cert-manager so the runner can update ONE Secret
+# (`cloudflare-api-token`) used by the ClusterIssuer DNS-01 solver.
+# Secret is pre-created by the cluster-admin during bootstrap; CI only
+# updates content on rotation.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cf-token-writer
+  namespace: cert-manager
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["cloudflare-api-token"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cf-token-writer
+  namespace: cert-manager
+subjects:
+  - kind: ServiceAccount
+    name: arc-itguys-ro-nextcloud-gha-rs-no-permission
+    namespace: arc-runners
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cf-token-writer

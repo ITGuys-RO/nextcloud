@@ -1,3 +1,9 @@
+# NOT APPLIED BY CI. The live nginx-tls-proxy on asus-laptop is the shared
+# :443 ingress for multiple Mesh apps (headlamp, degoog, searxng, degoog-mcp).
+# Live state has additional vhosts and a second cert mount (/tls-warp, secret
+# mesh-warp-tls) that this file does NOT declare. Editing the live proxy is
+# an out-of-band operation. This file is a historical baseline of the
+# nextcloud-only vhost; do NOT `kubectl apply` it as-is.
 apiVersion: v1
 kind: ConfigMap
 metadata:
