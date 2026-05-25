@@ -53,10 +53,21 @@ Cluster-admin runs these once. CI cannot grant itself rights.
 
 ## Operating
 
-- Routine change: `git push origin main` → CI applies path-relevant jobs.
-- Force full reconcile: `gh workflow run deploy.yml -f reconcile_all=true`.
-- Drift correction: same — full reconcile re-asserts repo state.
+- Routine change: `git push origin main` → CI applies path-relevant jobs. No further action needed; secrets job always runs, manifests/helm jobs run only if their paths changed.
 - Rollback: `gh workflow disable deploy.yml`, then `helm rollback nextcloud -n nextcloud` manually.
+
+### Force full reconcile
+
+```
+gh workflow run deploy.yml -f reconcile_all=true
+```
+
+When to use:
+- Drift suspected (someone ran `kubectl edit` / `helm upgrade` against the cluster out-of-band).
+- A GH Actions Secret was rotated but no repo file changed (path filter wouldn't trigger helm/manifests).
+- Workflow was disabled and re-enabled; first run after re-enable.
+
+**Not needed** after a normal merge — the merge push already triggers all relevant jobs via paths-filter (helm filter includes `.github/workflows/deploy.yml`, so a workflow edit forces helm reconcile too).
 
 Access: `https://nextcloud.itguys.ro` (Mesh participants only).
 
