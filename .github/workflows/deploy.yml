@@ -150,8 +150,48 @@ jobs:
             --dry-run=client -o yaml \
             | kubectl apply --server-side -f -
 
+  validate:
+    # Offline, no-cluster schema gate. Client dry-run only (never --server) so
+    # this runs without the in-cluster API. manifests/60-nginx-tls-proxy.yaml is
+    # excluded on purpose — it is applied out-of-band (see CLAUDE.md), so it is
+    # not part of the CI-scoped manifest set.
+    runs-on: arc-itguys-ro-nextcloud
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+      - uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+      - name: Validate CI-scoped manifests (client dry-run)
+        run: |
+          set -euo pipefail
+          for f in \
+            manifests/20-certificate.yaml \
+            manifests/30-mariadb.yaml \
+            manifests/40-valkey.yaml \
+            manifests/50-nextcloud-pvcs.yaml \
+            manifests/70-backup-cronjob.yaml; do
+            echo "::group::validate $f"
+            kubectl apply --dry-run=client -f "$f"
+            echo "::endgroup::"
+          done
+      - name: Validate helm chart (lint + template, client dry-run)
+        run: |
+          set -euo pipefail
+          helm repo add nextcloud "${HELM_REPO_URL}"
+          helm repo update nextcloud
+          # Pull+untar so `helm lint` gets a local chart path (helm v4 dropped
+          # `helm lint --version` on a remote ref).
+          chart_dir="$(mktemp -d)"
+          helm pull nextcloud/nextcloud --version "${HELM_CHART_VERSION}" \
+            --untar --untardir "$chart_dir"
+          helm lint "$chart_dir/nextcloud" -f helm/nextcloud-values.yaml
+          helm template "${HELM_RELEASE}" nextcloud/nextcloud \
+            --namespace "${KUBE_NS}" \
+            --version "${HELM_CHART_VERSION}" \
+            -f helm/nextcloud-values.yaml \
+            | kubectl apply --dry-run=client -f -
+
   manifests:
-    needs: [changes, secrets]
+    needs: [changes, secrets, validate]
     if: ${{ needs.changes.outputs.manifests == 'true' || inputs.reconcile_all }}
     runs-on: arc-itguys-ro-nextcloud
     steps:
@@ -177,7 +217,7 @@ jobs:
           kubectl -n "${KUBE_NS}" rollout status deploy/valkey --timeout=2m
 
   helm:
-    needs: [changes, secrets]
+    needs: [changes, secrets, validate]
     if: ${{ needs.changes.outputs.helm == 'true' || inputs.reconcile_all }}
     runs-on: arc-itguys-ro-nextcloud
     steps:
