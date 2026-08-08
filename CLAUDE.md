@@ -1,23 +1,27 @@
 # CLAUDE.md
 
-Nextcloud deploy artifacts on 3-node k3s-over-Cloudflare-WARP-Mesh. Not app code. Live `https://nextcloud.itguys.ro` (Mesh-only, :443 via proxy hostPort).
+Nextcloud deploy artifacts on k3s-over-Cloudflare-WARP-Mesh. Not app code. Live `https://nextcloud.itguys.ro` (Mesh-only, :443 via `edge-proxy` in ns `ingress`).
+
+> **2026-08-08 asus-laptop decommission.** Cluster is now 2 nodes: `acer-laptop` (control-plane + only app node) and `wsl`. Everything below that used to say asus now says acer. See commit `b793012`.
 
 ## Operating model: push-to-main CI
 
-- Push main → ARC runner `arc-itguys-ro-nextcloud` (asus-pinned, in-cluster) runs `.github/workflows/deploy.yml`. PR → `pr-checks.yml` dry-runs (no apply, no secrets).
+- Push main → ARC runner `arc-itguys-ro-nextcloud` (in-cluster, ns `arc-runners`, on acer) runs `.github/workflows/deploy.yml`. PR → `pr-checks.yml` dry-runs (no apply, no secrets).
+- **`kubectl apply --dry-run=client` is NOT offline.** Apply GETs the live object to build the merge patch, so every dry-run needs a namespace the deployer SA can read. `manifests/*.yaml` carry `metadata.namespace: nextcloud`; `helm template` output does NOT, so its dry-run must pass `-n "${KUBE_NS}"` explicitly. Omit it and kubectl defaults to the runner pod's own ns `arc-runners` → `Forbidden` (broke run 31261070925).
 - Runner SA bound to Role `nextcloud-deployer` (ns `nextcloud`, broad CRUD) + Role `cf-token-writer` (ns `cert-manager`, narrow update of Secret `cloudflare-api-token` only). RBAC at `manifests/bootstrap/11-ci-deployer-rbac.yaml`.
-- Path filter SKIPS `manifests/60-nginx-tls-proxy.yaml` — shared :443 also serves headlamp/degoog/searxng/degoog-mcp w/ extra vhosts + `/tls-warp` cert mount not in repo. Edit live out-of-band; repo file = historical baseline (header warns DO NOT apply).
+- Path filter SKIPS `manifests/60-nginx-tls-proxy.yaml` — **retired 2026-08-08**. That proxy is gone; shared Mesh :443 is now `edge-proxy` (ns `ingress`), owned by the k3s-cluster repo. File kept as historical record only; applying it would fight edge-proxy for hostPort 443.
 - `manifests/bootstrap/` + ARC scale set helm release = one-time manual (CI cannot grant itself rights). Re-apply on fresh cluster.
 - `workflow_dispatch` with `reconcile_all=true` forces full reconcile.
 - Design: `docs/superpowers/specs/2026-05-25-nextcloud-ci-deployment-design.md`. Original: `docs/2026-05-17-nextcloud-k3s-design.md`.
+- **Cluster itself lives in a separate repo: `ITGuys-RO/k3s-cluster`.** Owns nodes, bootstrap, ARC, cert-manager, and the shared `edge-proxy` ingress (`manifests/edge-proxy/`). Start any cluster-level diagnosis there, not here — this repo only owns ns `nextcloud`.
 - Cluster runbook (outside repo): `~/cloudflare-mesh-k3s-state.md` — SoT for node names, Mesh IPs, components.
 
 ## Architecture invariants (don't violate without revisiting design)
 
-- **Single-node pin:** whole stack in ns `nextcloud` w/ `nodeSelector: kubernetes.io/hostname=asus-laptop` on every pod. Storage = `local-path` (node-local RWO) on asus only. Nothing schedules to `acer-laptop` or `wsl`. No storage HA — accepted.
-- **Mesh-only, no public:** asus nginx TLS proxy binds host `:443` via `hostPort` (single replica; Service ClusterIP). DNS `nextcloud.itguys.ro` → A `100.96.0.2`, DNS-only / grey-cloud. Cluster cloudflared tunnel deliberately NOT used. No ingress controller (traefik disabled). Future apps = added nginx SNI server blocks + own cert.
+- **Single-node pin:** whole stack in ns `nextcloud` w/ `nodeSelector: kubernetes.io/hostname=acer-laptop` on every pod. Storage = `local-path` (node-local RWO) on acer only. Nothing schedules to `wsl`. No storage HA — accepted.
+- **Mesh-only, no public:** TLS terminated by `edge-proxy` (ns `ingress`, k3s-cluster repo) binding host `:443` via `hostPort` on acer. DNS `nextcloud.itguys.ro` → A `100.96.0.4` (acer Mesh IP), DNS-only / grey-cloud. Cluster cloudflared tunnel deliberately NOT used. No ingress controller (traefik disabled). Adding a vhost = edit edge-proxy in the k3s-cluster repo, not here.
 - **Components:** chart `nextcloud/nextcloud` (Apache img, plain HTTP Service :8080; chart nginx sidecar OFF — TLS terminated by separate front nginx, Deviation #1). Dedicated MariaDB (Postgres rejected). Dedicated Valkey for `memcache.locking`/`memcache.distributed` — fresh instance, do NOT reuse degoog's. TLS via cert-manager (ns `cert-manager`) w/ Cloudflare DNS-01 ClusterIssuer, auto-renewed (proxy self-reloads on rotation).
-- **Backups ≠ replication:** nightly asus CronJob `mariadb-dump --single-transaction` (no `occ`/maintenance-mode — Deviation #2) + `config.php` copy to local PVC, then `rsync` data + dump to `acer-laptop` over Mesh SSH. Acer copy = real recovery path; local PVC only covers accidental deletion.
+- **Backups SUSPENDED 2026-08-08.** `manifests/70-backup-cronjob.yaml` has `suspend: true`. It existed for the off-node copy: nextcloud ran on asus and rsynced data + latest dump to acer. Now that nextcloud runs *on* acer, the rsync target `100.96.0.4` is the same machine and the same disk — it protects against nothing. **There is currently no backup at all.** The nightly `mariadb-dump --single-transaction` (no `occ`/maintenance-mode — Deviation #2) + `config.php` copy was *not* redundant (point-in-time protection ≠ disk redundancy); unsuspend with the rsync steps dropped if dumps are wanted back without a real off-node target.
 
 ## Secrets policy (hard rule — repo may go to GitHub)
 

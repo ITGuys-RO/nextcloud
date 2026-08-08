@@ -151,10 +151,15 @@ jobs:
             | kubectl apply --server-side -f -
 
   validate:
-    # Offline, no-cluster schema gate. Client dry-run only (never --server) so
-    # this runs without the in-cluster API. manifests/60-nginx-tls-proxy.yaml is
-    # excluded on purpose — it is applied out-of-band (see CLAUDE.md), so it is
-    # not part of the CI-scoped manifest set.
+    # Schema gate. Client dry-run only (never --server) so nothing is written,
+    # but note `kubectl apply --dry-run=client` is NOT offline: apply still GETs
+    # the live object to compute the merge patch. Every invocation therefore
+    # needs a namespace the deployer SA can read — either stamped in the file's
+    # metadata or passed as `-n "${KUBE_NS}"`. Without it kubectl falls back to
+    # the runner pod's own namespace (arc-runners), where the SA has no rights.
+    # manifests/60-nginx-tls-proxy.yaml is excluded on purpose — it is applied
+    # out-of-band (see CLAUDE.md), so it is not part of the CI-scoped manifest
+    # set.
     runs-on: arc-itguys-ro-nextcloud
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -188,7 +193,7 @@ jobs:
             --namespace "${KUBE_NS}" \
             --version "${HELM_CHART_VERSION}" \
             -f helm/nextcloud-values.yaml \
-            | kubectl apply --dry-run=client -f -
+            | kubectl apply -n "${KUBE_NS}" --dry-run=client -f -
 
   manifests:
     needs: [changes, secrets, validate]
