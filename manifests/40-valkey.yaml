@@ -14,7 +14,7 @@ spec:
       labels: { app: valkey }
     spec:
       nodeSelector:
-        kubernetes.io/hostname: asus-laptop
+        kubernetes.io/hostname: acer-laptop
       containers:
         - name: valkey
           image: valkey/valkey:8-alpine

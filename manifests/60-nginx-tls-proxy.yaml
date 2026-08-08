@@ -1,9 +1,16 @@
-# NOT APPLIED BY CI. The live nginx-tls-proxy on asus-laptop is the shared
-# :443 ingress for multiple Mesh apps (headlamp, degoog, searxng, degoog-mcp).
-# Live state has additional vhosts and a second cert mount (/tls-warp, secret
-# mesh-warp-tls) that this file does NOT declare. Editing the live proxy is
-# an out-of-band operation. This file is a historical baseline of the
-# nextcloud-only vhost; do NOT `kubectl apply` it as-is.
+# RETIRED — HISTORICAL ONLY. NOT APPLIED BY CI (see the `!manifests/60-*`
+# exclusion in .github/workflows/deploy.yml).
+#
+# This proxy no longer exists. The shared Mesh :443 ingress is now `edge-proxy`
+# in the `ingress` namespace, owned by the k3s-cluster repo
+# (manifests/edge-proxy/), which carries the nextcloud vhost along with the
+# other Mesh apps. The old per-namespace nginx-tls-proxy Deployments were
+# removed during the 2026-08-08 asus-laptop decommission, when two of them
+# would otherwise have collided on hostPort 443 on the surviving node.
+#
+# Do NOT `kubectl apply` this: it would fight edge-proxy for :443 on
+# acer-laptop and take every Mesh vhost down. Kept only as a record of the
+# original nextcloud-only vhost.
 apiVersion: v1
 kind: ConfigMap
 metadata:

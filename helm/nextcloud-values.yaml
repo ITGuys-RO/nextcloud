@@ -71,9 +71,11 @@ service:
   type: ClusterIP
   port: 8080
 
-# Pin the whole stack to asus (design §3 invariant).
+# Pin the whole stack to acer (design §3 invariant — the pinned-node rule still
+# holds, the node changed). asus-laptop was decommissioned 2026-08-08; acer is
+# now the only app node and the k3s control plane.
 nodeSelector:
-  kubernetes.io/hostname: asus-laptop
+  kubernetes.io/hostname: acer-laptop
 
 startupProbe:
   enabled: true

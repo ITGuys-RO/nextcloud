@@ -4,6 +4,17 @@ metadata:
   name: nextcloud-backup
   namespace: nextcloud
 spec:
+  # SUSPENDED 2026-08-08. This job's value was the off-node copy: nextcloud ran
+  # on asus-laptop and rsynced data + the latest dump to acer-laptop. With asus
+  # decommissioned, nextcloud runs ON acer and the rsync target 100.96.0.4 is
+  # the same machine and the same disk — a copy that survives nothing.
+  #
+  # Re-enable (suspend: false) once there is a genuine off-node target. Note
+  # the job also takes a nightly mysqldump + config.php snapshot, which is
+  # point-in-time protection against logical corruption rather than disk
+  # redundancy — that part was NOT redundant, so if you want dumps back without
+  # the pointless rsync, drop the rsync steps and unsuspend.
+  suspend: true
   schedule: "0 3 * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
@@ -15,7 +26,7 @@ spec:
         spec:
           restartPolicy: Never
           nodeSelector:
-            kubernetes.io/hostname: asus-laptop
+            kubernetes.io/hostname: acer-laptop
           containers:
             - name: backup
               image: alpine:3.21
