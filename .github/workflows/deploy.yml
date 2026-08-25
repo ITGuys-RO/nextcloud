@@ -7,6 +7,14 @@ name: Deploy nextcloud
 #
 # `secrets` always runs (cheap, idempotent). `manifests` and `helm` jobs run
 # only when their respective paths changed (or workflow_dispatch reconcile_all).
+#
+# PARTIAL MIGRATION, on purpose. The applying and installing jobs are shims over
+# dustfeather/shared-workflows (deploy-k8s.yml and deploy-helm.yml); `secrets`
+# stays hand-written and always will. Its five Secrets do not fit any KEY=VALUE
+# input: one is a `patch --type=merge` into a DIFFERENT namespace against a Role
+# that permits update on one name only, and one is a `--from-file` SSH key.
+# Expressing those through a shared workflow would mean widening its surface for
+# a single caller. This is the carve-out issue #18 recorded for this repo.
 
 on:
   push:
@@ -31,9 +39,6 @@ concurrency:
 
 env:
   KUBE_NS: nextcloud
-  HELM_RELEASE: nextcloud
-  HELM_CHART_VERSION: "9.1.0"
-  HELM_REPO_URL: "https://nextcloud.github.io/helm/"
 
 jobs:
   changes:
@@ -41,6 +46,16 @@ jobs:
     outputs:
       helm: ${{ steps.f.outputs.helm }}
       manifests: ${{ steps.f.outputs.manifests }}
+      # Chart coordinates live here rather than in workflow-level `env:` because
+      # a reusable-workflow `with:` block cannot read the `env` context — only
+      # `github`, `needs`, `vars` and `inputs`. Emitting them once as outputs
+      # keeps the validation gate and the deploy on the same chart version;
+      # copying the literals into both shims would let them drift, and a gate
+      # that lints a different version than the one being installed is worse
+      # than no gate, because it is green.
+      chart: ${{ steps.chart.outputs.chart }}
+      chart-version: ${{ steps.chart.outputs.version }}
+      repo-url: ${{ steps.chart.outputs.repo-url }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -55,6 +70,14 @@ jobs:
             manifests:
               - 'manifests/*.yaml'
               - '!manifests/60-nginx-tls-proxy.yaml'
+      - id: chart
+        run: |
+          set -euo pipefail
+          {
+            echo "chart=nextcloud/nextcloud"
+            echo "version=9.1.0"
+            echo "repo-url=https://nextcloud.github.io/helm/"
+          } >> "$GITHUB_OUTPUT"
 
   secrets:
     runs-on: arc-itguys-ro-nextcloud
@@ -150,7 +173,7 @@ jobs:
             --dry-run=client -o yaml \
             | kubectl apply --server-side -f -
 
-  validate:
+  validate-manifests:
     # Schema gate. Client dry-run only (never --server) so nothing is written,
     # but note `kubectl apply --dry-run=client` is NOT offline: apply still GETs
     # the live object to compute the merge patch. Every invocation therefore
@@ -160,10 +183,13 @@ jobs:
     # manifests/60-nginx-tls-proxy.yaml is excluded on purpose — it is applied
     # out-of-band (see CLAUDE.md), so it is not part of the CI-scoped manifest
     # set.
+    #
+    # Stays hand-written: deploy-k8s.yml applies for real and has no dry-run
+    # mode, which is the right call for a deploy workflow and the wrong one for
+    # a gate.
     runs-on: arc-itguys-ro-nextcloud
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
       - uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
       - name: Validate CI-scoped manifests (client dry-run)
         run: |
@@ -178,66 +204,73 @@ jobs:
             kubectl apply --dry-run=client -f "$f"
             echo "::endgroup::"
           done
-      - name: Validate helm chart (lint + template, client dry-run)
-        run: |
-          set -euo pipefail
-          helm repo add nextcloud "${HELM_REPO_URL}"
-          helm repo update nextcloud
-          # Pull+untar so `helm lint` gets a local chart path (helm v4 dropped
-          # `helm lint --version` on a remote ref).
-          chart_dir="$(mktemp -d)"
-          helm pull nextcloud/nextcloud --version "${HELM_CHART_VERSION}" \
-            --untar --untardir "$chart_dir"
-          helm lint "$chart_dir/nextcloud" -f helm/nextcloud-values.yaml
-          helm template "${HELM_RELEASE}" nextcloud/nextcloud \
-            --namespace "${KUBE_NS}" \
-            --version "${HELM_CHART_VERSION}" \
-            -f helm/nextcloud-values.yaml \
-            | kubectl apply -n "${KUBE_NS}" --dry-run=client -f -
+
+  # The chart gate. Same workflow as the `helm` job below, called with
+  # `upgrade: false` — it lints and renders and writes nothing.
+  validate-chart:
+    needs: changes
+    permissions:
+      contents: read
+    uses: dustfeather/shared-workflows/.github/workflows/deploy-helm.yml@v4
+    with:
+      namespace: nextcloud
+      release: nextcloud
+      chart: ${{ needs.changes.outputs.chart }}
+      chart-version: ${{ needs.changes.outputs.chart-version }}
+      repo-url: ${{ needs.changes.outputs.repo-url }}
+      values-files: helm/nextcloud-values.yaml
+      runner: arc-itguys-ro-nextcloud
+      setup-kubectl: true
+      lint: true
+      template-check: true
+      upgrade: false
 
   manifests:
-    needs: [changes, secrets, validate]
+    needs: [changes, secrets, validate-manifests, validate-chart]
     if: ${{ needs.changes.outputs.manifests == 'true' || inputs.reconcile_all }}
-    runs-on: arc-itguys-ro-nextcloud
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
-      - name: Apply manifests (CI-scoped only; excludes bootstrap/ and shared nginx proxy)
-        run: |
-          set -euo pipefail
-          for f in \
-            manifests/20-certificate.yaml \
-            manifests/30-mariadb.yaml \
-            manifests/40-valkey.yaml \
-            manifests/50-nextcloud-pvcs.yaml \
-            manifests/70-backup-cronjob.yaml; do
-            echo "::group::apply $f"
-            kubectl apply -f "$f"
-            echo "::endgroup::"
-          done
-      - name: Wait for non-chart Deployment rollouts
-        run: |
-          set -euo pipefail
-          kubectl -n "${KUBE_NS}" rollout status deploy/nextcloud-mariadb --timeout=3m
-          kubectl -n "${KUBE_NS}" rollout status deploy/valkey --timeout=2m
+    permissions:
+      contents: read
+    uses: dustfeather/shared-workflows/.github/workflows/deploy-k8s.yml@v4
+    with:
+      namespace: nextcloud
+      runner: arc-itguys-ro-nextcloud
+      setup-kubectl: true
+      # `none`, not the `get` default: the deployer SA holds a namespace-scoped
+      # Role, and reading a Namespace is a cluster-scoped verb it does not have.
+      ensure-namespace: none
+      # CI-scoped only — excludes bootstrap/ and the shared nginx proxy, which
+      # is applied out of band. Every file stamps `namespace: nextcloud`, so
+      # the shared workflow's `-n` agrees with them rather than fighting them.
+      manifests: |
+        manifests/20-certificate.yaml
+        manifests/30-mariadb.yaml
+        manifests/40-valkey.yaml
+        manifests/50-nextcloud-pvcs.yaml
+        manifests/70-backup-cronjob.yaml
+      # The non-chart Deployments. One timeout covers both, so valkey now gets
+      # mariadb's 3m rather than its old 2m — a wider budget on a wait that
+      # already passed, not a behaviour change anyone can observe.
+      rollout-targets: |
+        deploy/nextcloud-mariadb
+        deploy/valkey
+      rollout-timeout: 3m
 
   helm:
-    needs: [changes, secrets, validate]
+    needs: [changes, secrets, validate-manifests, validate-chart]
     if: ${{ needs.changes.outputs.helm == 'true' || inputs.reconcile_all }}
-    runs-on: arc-itguys-ro-nextcloud
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
-      - uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
-      - name: helm upgrade --install nextcloud
-        run: |
-          set -euo pipefail
-          helm repo add nextcloud "${HELM_REPO_URL}"
-          helm repo update nextcloud
-          helm upgrade --install "${HELM_RELEASE}" nextcloud/nextcloud \
-            --namespace "${KUBE_NS}" \
-            --version "${HELM_CHART_VERSION}" \
-            -f helm/nextcloud-values.yaml \
-            --atomic --timeout 5m
-      - name: Wait for nextcloud rollout
-        run: kubectl -n "${KUBE_NS}" rollout status deploy/nextcloud --timeout=5m
+    permissions:
+      contents: read
+    uses: dustfeather/shared-workflows/.github/workflows/deploy-helm.yml@v4
+    with:
+      namespace: nextcloud
+      release: nextcloud
+      chart: ${{ needs.changes.outputs.chart }}
+      chart-version: ${{ needs.changes.outputs.chart-version }}
+      repo-url: ${{ needs.changes.outputs.repo-url }}
+      values-files: helm/nextcloud-values.yaml
+      runner: arc-itguys-ro-nextcloud
+      setup-kubectl: true
+      atomic: true
+      helm-timeout: 5m
+      rollout-targets: deploy/nextcloud
+      rollout-timeout: 5m
