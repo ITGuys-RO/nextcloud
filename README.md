@@ -1,5 +1,7 @@
 # nextcloud (k3s homelab)
 
+[![Deploy](https://github.com/ITGuys-RO/nextcloud/actions/workflows/deploy.yml/badge.svg)](https://github.com/ITGuys-RO/nextcloud/actions/workflows/deploy.yml)
+
 CI-deployed Nextcloud stack for the 3-node k3s-over-Cloudflare-WARP-Mesh cluster. Push to `main` triggers `.github/workflows/deploy.yml` on the self-hosted ARC runner `arc-itguys-ro-nextcloud`.
 
 Cluster operational runbook (outside repo): `~/cloudflare-mesh-k3s-state.md`.
