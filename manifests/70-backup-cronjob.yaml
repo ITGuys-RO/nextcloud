@@ -53,9 +53,13 @@ spec:
               command: ["/bin/sh", "-eu", "-c"]
               args:
                 - |
-                  # minio-client (not `mc` from main, which is Midnight
-                  # Commander) is the lightest S3 client in alpine at ~30 MiB
-                  # with no dependency closure.
+                  # minio-client is the lightest S3 client in alpine (~30 MiB,
+                  # no dependency closure). It installs the binary as `mcli`,
+                  # NOT `mc` — alpine gives `mc` to Midnight Commander in main
+                  # and renames MinIO's out of the way. `apk add` therefore
+                  # succeeds and the first `mc` call is what fails, which is
+                  # exactly how the 2026-09-03 run died with `mc: not found`
+                  # after producing a perfectly good 279 KB snapshot.
                   apk add -q --no-progress sqlite minio-client
 
                   DB=/nc-data/data/nextcloud.db
@@ -77,7 +81,7 @@ spec:
 
                   # Credentials via MC_HOST_* so they never land on disk.
                   export MC_HOST_r2="https://${R2_ACCESS_KEY_ID}:${R2_SECRET_ACCESS_KEY}@328c2ac1408b3260bb83a7735a7fafe8.r2.cloudflarestorage.com"
-                  MC="mc --config-dir /tmp/mc"
+                  MC="mcli --config-dir /tmp/mc"
 
                   echo "[backup] uploading nextcloud-$TS.db.gz ($SZ bytes)"
                   $MC cp -q "$WORK/nextcloud.db.gz" "r2/$R2_BUCKET/db/nextcloud-$TS.db.gz"
@@ -85,12 +89,18 @@ spec:
                   # Prune oldest beyond RETENTION. Scoped to the db/ prefix and
                   # to the nextcloud-*.db.gz name so it can never touch a file
                   # object, which shares this bucket.
+                  #
+                  # `sort -r | tail -n +N` rather than `sort | head -n -N`:
+                  # negative line counts are a GNU coreutils extension and this
+                  # is busybox. A rejected `head` mid-pipeline would be
+                  # invisible — `set -e` only sees the while loop's status — so
+                  # retention would silently never run. `tail -n +N` is POSIX.
                   echo "[backup] pruning to newest $RETENTION"
                   $MC ls "r2/$R2_BUCKET/db/" \
                     | awk '{print $NF}' \
                     | grep -E '^nextcloud-[0-9]{8}-[0-9]{6}\.db\.gz$' \
-                    | sort \
-                    | head -n "-$RETENTION" \
+                    | sort -r \
+                    | tail -n "+$((RETENTION + 1))" \
                     | while IFS= read -r old; do
                         echo "[backup] removing $old"
                         $MC rm "r2/$R2_BUCKET/db/$old"
