@@ -6,8 +6,6 @@ Raw Kubernetes YAML.
 
 Applied by the `nextcloud-deployer` ServiceAccount in ns `nextcloud`:
 
-- `20-certificate.yaml`
-- `30-mariadb.yaml`
 - `40-valkey.yaml`
 - `50-nextcloud-pvcs.yaml`
 - `70-backup-cronjob.yaml`

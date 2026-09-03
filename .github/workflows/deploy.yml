@@ -183,7 +183,6 @@ jobs:
         run: |
           set -euo pipefail
           for f in \
-            manifests/20-certificate.yaml \
             manifests/40-valkey.yaml \
             manifests/50-nextcloud-pvcs.yaml \
             manifests/70-backup-cronjob.yaml; do
@@ -229,7 +228,6 @@ jobs:
       # is applied out of band. Every file stamps `namespace: nextcloud`, so
       # the shared workflow's `-n` agrees with them rather than fighting them.
       manifests: |
-        manifests/20-certificate.yaml
         manifests/40-valkey.yaml
         manifests/50-nextcloud-pvcs.yaml
         manifests/70-backup-cronjob.yaml
