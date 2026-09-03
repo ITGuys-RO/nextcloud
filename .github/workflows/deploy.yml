@@ -33,9 +33,11 @@ on:
 permissions:
   contents: read
 
+# One deploy at a time, newest wins: a run that is superseded gets cancelled
+# rather than queued behind a commit that is already history.
 concurrency:
   group: deploy-nextcloud
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   KUBE_NS: nextcloud
