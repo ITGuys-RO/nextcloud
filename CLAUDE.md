@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Nextcloud deploy artifacts on k3s-over-Cloudflare-WARP-Mesh. Not app code. Live `https://nextcloud.itguys.ro` (Mesh-only, :443 via `edge-proxy` in ns `ingress`).
+Nextcloud deploy artifacts on k3s-over-Cloudflare-WARP-Mesh. Not app code. Live `https://cloud.itguys.ro` (Mesh-only, :443 via `edge-proxy` in ns `ingress`).
 
 > **2026-08-08 asus-laptop decommission.** Cluster is now 2 nodes: `acer-laptop` (control-plane + only app node) and `wsl`. Everything below that used to say asus now says acer. See commit `b793012`.
 
@@ -20,9 +20,9 @@ Nextcloud deploy artifacts on k3s-over-Cloudflare-WARP-Mesh. Not app code. Live 
 ## Architecture invariants (don't violate without revisiting design)
 
 - **Single-node pin:** whole stack in ns `nextcloud` w/ `nodeSelector: kubernetes.io/hostname=acer-laptop` on every pod. Storage = `local-path` (node-local RWO) on acer only. Nothing schedules to `wsl`. No storage HA — accepted.
-- **Mesh-only, no public:** TLS terminated by `edge-proxy` (ns `ingress`, k3s-cluster repo) binding host `:443` via `hostPort` on acer. DNS `nextcloud.itguys.ro` → A `100.96.0.4` (acer Mesh IP), DNS-only / grey-cloud. Cluster cloudflared tunnel deliberately NOT used. No ingress controller (traefik disabled). Adding a vhost = edit edge-proxy in the k3s-cluster repo, not here.
-- **Components:** chart `nextcloud/nextcloud` (Apache img, plain HTTP Service :8080; chart nginx sidecar OFF — TLS terminated by separate front nginx, Deviation #1). Dedicated MariaDB (Postgres rejected). Dedicated Valkey for `memcache.locking`/`memcache.distributed` — fresh instance, do NOT reuse degoog's. TLS via cert-manager (ns `cert-manager`) w/ Cloudflare DNS-01 ClusterIssuer, auto-renewed (proxy self-reloads on rotation).
-- **Backups SUSPENDED 2026-08-08.** `manifests/70-backup-cronjob.yaml` has `suspend: true`. It existed for the off-node copy: nextcloud ran on asus and rsynced data + latest dump to acer. Now that nextcloud runs *on* acer, the rsync target `100.96.0.4` is the same machine and the same disk — it protects against nothing. **There is currently no backup at all.** The nightly `mariadb-dump --single-transaction` (no `occ`/maintenance-mode — Deviation #2) + `config.php` copy was *not* redundant (point-in-time protection ≠ disk redundancy); unsuspend with the rsync steps dropped if dumps are wanted back without a real off-node target.
+- **Mesh-only, no public:** TLS terminated by `edge-proxy` (ns `ingress`, k3s-cluster repo) binding host `:443` via `hostPort` on acer. DNS `cloud.itguys.ro` → A `100.96.0.4` (acer Mesh IP), DNS-only / grey-cloud. Cluster cloudflared tunnel deliberately NOT used. No ingress controller (traefik disabled). Adding a vhost = edit edge-proxy in the k3s-cluster repo, not here.
+- **Components:** chart `nextcloud/nextcloud` (Apache img, plain HTTP Service :8080; chart nginx sidecar OFF — TLS terminated by separate front nginx, Deviation #1). SQLite (`internalDatabase.enabled`), holding metadata only — the file data lives in Cloudflare R2 as primary object storage, so the database is small enough to snapshot whole. MariaDB was removed 2026-09-03; Postgres was rejected earlier. Dedicated Valkey for `memcache.locking`/`memcache.distributed` — fresh instance, do NOT reuse degoog's. TLS via cert-manager (ns `cert-manager`) w/ Cloudflare DNS-01 ClusterIssuer, auto-renewed (proxy self-reloads on rotation).
+- **Backups: nightly SQLite snapshot to R2.** `manifests/70-backup-cronjob.yaml` runs `sqlite3 .backup` (never a raw `cp` — a copy of a live SQLite file is a torn page image that restores clean and fails later), gzips it, and uploads to `r2://nextcloud-data/db/`, keeping the newest 30. This is the backup that matters now: R2 holds the file blobs keyed by OID, and the mapping from OID to filename, owner and share lives only in that database. Retention is enforced *in the job*, not by an R2 lifecycle rule — the bucket also holds the only copy of the file data and R2 has no object versioning, so a mis-scoped expiration rule would be unrecoverable. Replaces the job suspended 2026-08-08, which rsynced to `100.96.0.4` — acer's retired mesh IP, and after the asus decommission the same machine the job ran on.
 
 ## Secrets policy (hard rule — repo may go to GitHub)
 
@@ -30,7 +30,7 @@ Nextcloud deploy artifacts on k3s-over-Cloudflare-WARP-Mesh. Not app code. Live 
 - Source-of-truth = GitHub Actions repo Secrets. Workflow renders k8s Secret manifests at apply time. Local `secrets/*.yaml` (gitignored) only used to seed `gh secret set`.
 - Commit `secrets/<name>.example` (placeholders) as schema reference.
 - CF API token scope: `Zone:DNS:Edit` + `Zone:Zone:Read` on `itguys.ro` only.
-- Non-k8s dep: out-of-band Cloudflare Gateway "Do Not Inspect" rule for `nextcloud.itguys.ro` (see README "Operational dependencies" / design §5). Silent failure if removed: clients get Gateway CA cert, Android app breaks, traffic decrypted at CF edge.
+- Non-k8s dep: out-of-band Cloudflare Gateway "Do Not Inspect" rule for `cloud.itguys.ro` (see README "Operational dependencies" / design §5). Silent failure if removed: clients get Gateway CA cert, Android app breaks, traffic decrypted at CF edge.
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph

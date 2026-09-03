@@ -13,7 +13,7 @@ Design: `docs/superpowers/specs/2026-05-25-nextcloud-ci-deployment-design.md`.
 .github/workflows/   deploy.yml (push:main) + pr-checks.yml (PR dry-run)
 docs/                design specs
 helm/                Helm values (committed, secret-free): cert-manager + nextcloud
-manifests/           raw k8s YAML (CI-applied: certificate, MariaDB, Valkey, PVCs, backup CronJob)
+manifests/           raw k8s YAML (CI-applied: certificate, Valkey, PVC, backup CronJob)
 manifests/bootstrap/ one-time, applied manually by cluster-admin (namespace, ClusterIssuer, deployer RBAC)
 secrets/             *.example templates only. Real values live in GitHub Actions Secrets.
 ```
@@ -30,7 +30,7 @@ Workflow on rotation:
 3. Re-run deploy (`gh workflow run deploy.yml -f reconcile_all=true`).
 
 GitHub Actions Secrets currently set:
-`CF_API_TOKEN`, `NEXTCLOUD_ADMIN_USERNAME`, `NEXTCLOUD_ADMIN_PASSWORD`, `MARIADB_ROOT_PASSWORD`, `MARIADB_USERNAME`, `MARIADB_PASSWORD`, `VALKEY_PASSWORD`, `BACKUP_SSH_PRIVATE_KEY`.
+`CF_API_TOKEN`, `NEXTCLOUD_ADMIN_USERNAME`, `NEXTCLOUD_ADMIN_PASSWORD`, `R2_ACCESS_KEY`, `R2_SECRET_KEY`, `VALKEY_PASSWORD`.
 
 The CF API token must be scoped `Zone:DNS:Edit` + `Zone:Zone:Read` on `itguys.ro` only.
 
@@ -48,8 +48,8 @@ Cluster-admin runs these once. CI cannot grant itself rights.
 5. `kubectl apply -f manifests/bootstrap/11-ci-deployer-rbac.yaml`
 6. Install ARC scale set (see design doc §4.2 for the helm install command).
 7. `gh secret set` for all 8 secrets (see above).
-8. Live-edit the shared nginx-tls-proxy ConfigMap to add the `nextcloud.itguys.ro` vhost (if not already present).
-9. DNS `nextcloud.itguys.ro` A → `100.96.0.2` (DNS-only).
+8. Live-edit the shared nginx-tls-proxy ConfigMap to add the `cloud.itguys.ro` vhost (if not already present).
+9. DNS `cloud.itguys.ro` A → `100.96.0.2` (DNS-only).
 10. Cloudflare Gateway "Do Not Inspect" rule for the hostname (see Operational dependencies).
 11. Push to `main` → CI takes over.
 
@@ -71,9 +71,9 @@ When to use:
 
 **Not needed** after a normal merge — the merge push already triggers all relevant jobs via paths-filter (helm filter includes `.github/workflows/deploy.yml`, so a workflow edit forces helm reconcile too).
 
-Access: `https://nextcloud.itguys.ro` (Mesh participants only).
+Access: `https://cloud.itguys.ro` (Mesh participants only).
 
 ## Operational dependencies (silent-failure if removed)
 
-- **Cloudflare Gateway "Do Not Inspect" rule** — `itguys` org has Gateway `tls_decrypt` enabled. Rule id `df440536-0b50-483d-b5d7-70cd7cbe6230` (`action: off`, `http.conn.hostname == "nextcloud.itguys.ro"`) exempts this host. If deleted: clients get the Gateway CA, Nextcloud Android app breaks, file traffic decrypted at Cloudflare's edge. Verify: `echo | openssl s_client -connect 100.96.0.2:443 -servername nextcloud.itguys.ro 2>/dev/null | openssl x509 -noout -issuer` must show `O = Let's Encrypt`. Any new host on :443 needs its own rule. Full context: design doc §5 amendment 2026-05-18.
-- **PV reclaim policy = Retain** — all three claims (`nextcloud-data`, `nextcloud-db`, `nextcloud-backups`) patched to `persistentVolumeReclaimPolicy: Retain` (local-path defaults to `Delete`). An accidental `kubectl delete pvc` does not wipe the hostPath. Real disk-loss recovery is the nightly acer rsync.
+- **Cloudflare Gateway "Do Not Inspect" rule** — `itguys` org has Gateway `tls_decrypt` enabled. Rule id `df440536-0b50-483d-b5d7-70cd7cbe6230` (`action: off`, `http.conn.hostname == "cloud.itguys.ro"`) exempts this host. If deleted: clients get the Gateway CA, Nextcloud Android app breaks, file traffic decrypted at Cloudflare's edge. Verify: `echo | openssl s_client -connect 100.96.0.2:443 -servername cloud.itguys.ro 2>/dev/null | openssl x509 -noout -issuer` must show `O = Let's Encrypt`. Any new host on :443 needs its own rule. Full context: design doc §5 amendment 2026-05-18.
+- **PV reclaim policy = Retain** — `nextcloud-data` is patched to `persistentVolumeReclaimPolicy: Retain` (local-path defaults to `Delete`), so an accidental `kubectl delete pvc` does not wipe the hostPath. It now holds only the install directory and the SQLite database; user files are in R2. Real recovery is the nightly SQLite snapshot in `r2://nextcloud-data/db/` plus the R2 objects themselves. The `nextcloud-db` and `nextcloud-backups` claims were removed with MariaDB on 2026-09-03.

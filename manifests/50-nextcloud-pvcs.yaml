@@ -1,3 +1,9 @@
+# The install directory, not the user's files. Since primary storage moved to
+# R2 (helm/nextcloud-values.yaml -> nextcloud.objectStore.s3), this PVC holds
+# only html/config/apps/themes plus the SQLite database at data/nextcloud.db.
+# Hence 20Gi rather than the 300Gi it needed when it held every uploaded file.
+#
+# PVC size is immutable, so this value only takes effect on a delete+recreate.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -8,16 +14,4 @@ spec:
   storageClassName: local-path
   resources:
     requests:
-      storage: 300Gi
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: nextcloud-backups
-  namespace: nextcloud
-spec:
-  accessModes: ["ReadWriteOnce"]
-  storageClassName: local-path
-  resources:
-    requests:
-      storage: 100Gi
+      storage: 20Gi

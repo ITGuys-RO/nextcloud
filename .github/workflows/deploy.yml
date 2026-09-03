@@ -10,11 +10,11 @@ name: Deploy nextcloud
 #
 # PARTIAL MIGRATION, on purpose. The applying and installing jobs are shims over
 # dustfeather/shared-workflows (deploy-k8s.yml and deploy-helm.yml); `secrets`
-# stays hand-written and always will. Its five Secrets do not fit any KEY=VALUE
+# stays hand-written and always will. Its Secrets do not fit any KEY=VALUE
 # input: one is a `patch --type=merge` into a DIFFERENT namespace against a Role
-# that permits update on one name only, and one is a `--from-file` SSH key.
-# Expressing those through a shared workflow would mean widening its surface for
-# a single caller. This is the carve-out issue #18 recorded for this repo.
+# that permits update on one name only. Expressing that through a shared
+# workflow would mean widening its surface for a single caller. This is the
+# carve-out issue #18 recorded for this repo.
 
 on:
   push:
@@ -120,27 +120,29 @@ jobs:
             nextcloud-username: "${NEXTCLOUD_ADMIN_USERNAME}"
             nextcloud-password: "${NEXTCLOUD_ADMIN_PASSWORD}"
           EOF
-      - name: Render and apply nextcloud-db
+      - name: Render and apply nextcloud-r2
+        # R2 credentials, used by BOTH the chart (primary object storage) and
+        # the backup CronJob. The GH secrets are named R2_ACCESS_KEY /
+        # R2_SECRET_KEY; the in-cluster keys are access-key-id /
+        # secret-access-key, matching nextcloud.objectStore.s3.secretKeys in
+        # helm/nextcloud-values.yaml.
         env:
-          MARIADB_ROOT_PASSWORD: ${{ secrets.MARIADB_ROOT_PASSWORD }}
-          MARIADB_USERNAME: ${{ secrets.MARIADB_USERNAME }}
-          MARIADB_PASSWORD: ${{ secrets.MARIADB_PASSWORD }}
+          R2_ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY }}
+          R2_SECRET_KEY: ${{ secrets.R2_SECRET_KEY }}
         run: |
           set -euo pipefail
-          : "${MARIADB_ROOT_PASSWORD:?missing}"
-          : "${MARIADB_USERNAME:?missing}"
-          : "${MARIADB_PASSWORD:?missing}"
+          : "${R2_ACCESS_KEY:?missing}"
+          : "${R2_SECRET_KEY:?missing}"
           kubectl -n "${KUBE_NS}" apply --server-side -f - <<EOF
           apiVersion: v1
           kind: Secret
           metadata:
-            name: nextcloud-db
+            name: nextcloud-r2
             namespace: ${KUBE_NS}
           type: Opaque
           stringData:
-            mariadb-root-password: "${MARIADB_ROOT_PASSWORD}"
-            db-username: "${MARIADB_USERNAME}"
-            db-password: "${MARIADB_PASSWORD}"
+            access-key-id: "${R2_ACCESS_KEY}"
+            secret-access-key: "${R2_SECRET_KEY}"
           EOF
       - name: Render and apply valkey-auth
         env:
@@ -158,22 +160,6 @@ jobs:
           stringData:
             redis-password: "${VALKEY_PASSWORD}"
           EOF
-      - name: Render and apply backup-ssh
-        env:
-          BACKUP_SSH_PRIVATE_KEY: ${{ secrets.BACKUP_SSH_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          : "${BACKUP_SSH_PRIVATE_KEY:?missing}"
-          tmp=$(mktemp)
-          trap 'rm -f "$tmp"' EXIT
-          # Write key to a file so the YAML heredoc can embed it via `|`
-          # without quoting headaches.
-          printf '%s\n' "$BACKUP_SSH_PRIVATE_KEY" > "$tmp"
-          kubectl create secret generic backup-ssh \
-            -n "${KUBE_NS}" \
-            --from-file=id_ed25519="$tmp" \
-            --dry-run=client -o yaml \
-            | kubectl apply --server-side -f -
 
   validate-manifests:
     # Schema gate. Client dry-run only (never --server) so nothing is written,
@@ -198,7 +184,6 @@ jobs:
           set -euo pipefail
           for f in \
             manifests/20-certificate.yaml \
-            manifests/30-mariadb.yaml \
             manifests/40-valkey.yaml \
             manifests/50-nextcloud-pvcs.yaml \
             manifests/70-backup-cronjob.yaml; do
@@ -245,16 +230,12 @@ jobs:
       # the shared workflow's `-n` agrees with them rather than fighting them.
       manifests: |
         manifests/20-certificate.yaml
-        manifests/30-mariadb.yaml
         manifests/40-valkey.yaml
         manifests/50-nextcloud-pvcs.yaml
         manifests/70-backup-cronjob.yaml
-      # The non-chart Deployments. One timeout covers both, so valkey now gets
-      # mariadb's 3m rather than its old 2m — a wider budget on a wait that
-      # already passed, not a behaviour change anyone can observe.
-      rollout-targets: |
-        deploy/nextcloud-mariadb
-        deploy/valkey
+      # Valkey is the only non-chart Deployment left; MariaDB was removed when
+      # the database moved to SQLite.
+      rollout-targets: deploy/valkey
       rollout-timeout: 3m
 
   helm:

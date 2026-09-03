@@ -10,8 +10,15 @@ spec:
   privateKey:
     algorithm: ECDSA
     size: 256
+  # Renamed from nextcloud.itguys.ro 2026-09-03.
+  #
+  # Note this cert is NOT what serves the site: edge-proxy (ns `ingress`,
+  # k3s-cluster repo) terminates TLS with its own `edge-mesh-tls`, whose SAN
+  # list carries this hostname. This Certificate is left from the retired
+  # per-namespace nginx-tls-proxy and is kept only so the name resolves to a
+  # valid cert if anything in this namespace ever terminates TLS again.
   dnsNames:
-    - nextcloud.itguys.ro
+    - cloud.itguys.ro
   issuerRef:
     name: letsencrypt-cloudflare
     kind: ClusterIssuer

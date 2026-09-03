@@ -11,5 +11,9 @@ Pattern:
 3. `kubectl apply -f secrets/<name>.yaml`
 
 `*.example` template files are committed (cf-api-token, nextcloud-admin,
-nextcloud-db, valkey-auth, backup-ssh). The real `*.yaml` files are applied
-out-of-band and gitignored — they are never committed.
+nextcloud-r2, valkey-auth). The real `*.yaml` files are applied out-of-band and
+gitignored — they are never committed.
+
+`nextcloud-db` and `backup-ssh` are gone: the database moved to SQLite (no
+MariaDB credentials to hold) and the backup no longer rsyncs over SSH — it
+uploads to R2 with the same credentials as the object store.

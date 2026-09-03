@@ -4,84 +4,105 @@ metadata:
   name: nextcloud-backup
   namespace: nextcloud
 spec:
-  # SUSPENDED 2026-08-08. This job's value was the off-node copy: nextcloud ran
-  # on asus-laptop and rsynced data + the latest dump to acer-laptop. With asus
-  # decommissioned, nextcloud runs ON acer and the rsync target 100.96.0.4 is
-  # the same machine and the same disk — a copy that survives nothing.
+  # Snapshots the SQLite database to R2 nightly.
   #
-  # Re-enable (suspend: false) once there is a genuine off-node target. Note
-  # the job also takes a nightly mysqldump + config.php snapshot, which is
-  # point-in-time protection against logical corruption rather than disk
-  # redundancy — that part was NOT redundant, so if you want dumps back without
-  # the pointless rsync, drop the rsync steps and unsuspend.
-  suspend: true
+  # With file data in R2, this database is what makes those objects mean
+  # anything: the bucket holds blobs keyed by OID, and the mapping from OID to
+  # filename, owner and share lives here. Losing it turns the bucket into
+  # undifferentiated garbage, so this is the backup that matters now.
+  #
+  # It replaces a job that dumped MariaDB and rsynced everything to
+  # 100.96.0.4 — acer's retired WARP mesh IP, which after the asus
+  # decommission was the same machine the job ran on. That job was suspended
+  # 2026-08-08 and is gone along with MariaDB itself.
+  suspend: false
   schedule: "0 3 * * *"
   concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      backoffLimit: 1
+      backoffLimit: 2
       template:
         spec:
-          restartPolicy: Never
+          restartPolicy: OnFailure
           nodeSelector:
             kubernetes.io/hostname: acer-laptop
           containers:
             - name: backup
               image: alpine:3.21
               env:
-                - name: MARIADB_ROOT_PASSWORD
-                  valueFrom: { secretKeyRef: { name: nextcloud-db, key: mariadb-root-password } }
+                - name: R2_ACCESS_KEY_ID
+                  valueFrom: { secretKeyRef: { name: nextcloud-r2, key: access-key-id } }
+                - name: R2_SECRET_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: nextcloud-r2, key: secret-access-key } }
+                - name: R2_ENDPOINT
+                  value: "https://328c2ac1408b3260bb83a7735a7fafe8.r2.cloudflarestorage.com"
+                - name: R2_BUCKET
+                  value: "nextcloud-data"
+                # Retention is enforced here rather than by an R2 lifecycle
+                # rule on purpose: this bucket also holds the ONLY copy of the
+                # file data, and R2 has no object versioning to fall back on,
+                # so a mis-scoped expiration rule would be unrecoverable.
+                - name: RETENTION
+                  value: "30"
               resources:
-                requests: { cpu: 100m, memory: 256Mi }
-              command:
-                - sh
-                - -euc
+                requests: { cpu: 25m, memory: 64Mi }
+                limits: { memory: 256Mi }
+              command: ["/bin/sh", "-eu", "-c"]
+              args:
                 - |
-                  apk add --no-cache mariadb-client rsync openssh-client gzip coreutils >/dev/null
-                  TS=$(date +%F)
-                  mkdir -p /backups/db
-                  # Dump to a temp file FIRST: POSIX sh has no pipefail, so
-                  # `mariadb-dump | gzip` would mask a dump failure (gzip exits 0
-                  # on empty stdin → a valid but EMPTY .gz shipped as "success").
-                  # Writing to a file makes `set -e` abort on dump failure.
-                  echo "[backup] dumping DB"
-                  # NOTE: uses MariaDB root (homelab trade-off; a least-priv backup
-                  # user would need SELECT,LOCK TABLES,SHOW VIEW,EVENT,TRIGGER).
-                  mariadb-dump --single-transaction --quick --routines --triggers \
-                    -h nextcloud-mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" nextcloud > /tmp/dump.sql
-                  SZ=$(wc -c < /tmp/dump.sql)
-                  [ "$SZ" -gt 1024 ] || { echo "[backup] FATAL: dump only $SZ bytes — aborting"; exit 1; }
-                  gzip -c /tmp/dump.sql > "/backups/db/db-$TS.sql.gz"
-                  rm -f /tmp/dump.sql
-                  gzip -t "/backups/db/db-$TS.sql.gz"
-                  echo "[backup] capturing config.php"
-                  cp /nc-data/config/config.php "/backups/db/config-$TS.php"
-                  echo "[backup] pruning LOCAL copies older than 7 days (acer keeps full dump history by design — §4 recovery copy)"
-                  find /backups/db -name 'db-*.sql.gz' -mtime +7 -delete
-                  find /backups/db -name 'config-*.php' -mtime +7 -delete
-                  # Guard the destructive mirror: if the data PVC mounted empty,
-                  # an `rsync --delete` would wipe the acer recovery copy. config.php
-                  # was just read above, so its absence means /nc-data is bad.
-                  [ -f /nc-data/config/config.php ] || { echo "[backup] FATAL: /nc-data looks empty — refusing to rsync --delete"; exit 1; }
-                  echo "[backup] rsync data + latest dump off-node to acer-laptop"
-                  install -m600 /ssh/id_ed25519 /tmp/id
-                  SSHOPT="-i /tmp/id -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/khosts"
-                  rsync -a --delete -e "ssh $SSHOPT" \
-                    /nc-data/ dustfeather@100.96.0.4:~/backup/nextcloud/data/
-                  rsync -a -e "ssh $SSHOPT" \
-                    "/backups/db/db-$TS.sql.gz" "/backups/db/config-$TS.php" \
-                    dustfeather@100.96.0.4:~/backup/nextcloud/db/
-                  echo "[backup] done"
+                  # minio-client (not `mc` from main, which is Midnight
+                  # Commander) is the lightest S3 client in alpine at ~30 MiB
+                  # with no dependency closure.
+                  apk add -q --no-progress sqlite minio-client
+
+                  DB=/nc-data/data/nextcloud.db
+                  [ -f "$DB" ] || { echo "FATAL: no database at $DB"; exit 1; }
+
+                  TS=$(date -u +%Y%m%d-%H%M%S)
+                  WORK=$(mktemp -d)
+
+                  # `.backup`, never `cp`. Copying a live SQLite file yields a
+                  # torn page image that restores without complaint and fails
+                  # later. This takes a consistent snapshot under a read txn.
+                  echo "[backup] snapshotting $DB"
+                  sqlite3 "$DB" ".backup '$WORK/nextcloud.db'"
+                  gzip -9 "$WORK/nextcloud.db"
+
+                  SZ=$(wc -c < "$WORK/nextcloud.db.gz")
+                  [ "$SZ" -gt 4096 ] || { echo "FATAL: snapshot only $SZ bytes"; exit 1; }
+                  gzip -t "$WORK/nextcloud.db.gz"
+
+                  # Credentials via MC_HOST_* so they never land on disk.
+                  export MC_HOST_r2="https://${R2_ACCESS_KEY_ID}:${R2_SECRET_ACCESS_KEY}@328c2ac1408b3260bb83a7735a7fafe8.r2.cloudflarestorage.com"
+                  MC="mc --config-dir /tmp/mc"
+
+                  echo "[backup] uploading nextcloud-$TS.db.gz ($SZ bytes)"
+                  $MC cp -q "$WORK/nextcloud.db.gz" "r2/$R2_BUCKET/db/nextcloud-$TS.db.gz"
+
+                  # Prune oldest beyond RETENTION. Scoped to the db/ prefix and
+                  # to the nextcloud-*.db.gz name so it can never touch a file
+                  # object, which shares this bucket.
+                  echo "[backup] pruning to newest $RETENTION"
+                  $MC ls "r2/$R2_BUCKET/db/" \
+                    | awk '{print $NF}' \
+                    | grep -E '^nextcloud-[0-9]{8}-[0-9]{6}\.db\.gz$' \
+                    | sort \
+                    | head -n "-$RETENTION" \
+                    | while IFS= read -r old; do
+                        echo "[backup] removing $old"
+                        $MC rm "r2/$R2_BUCKET/db/$old"
+                      done
+
+                  echo "[backup] done: db/nextcloud-$TS.db.gz ($SZ bytes)"
               volumeMounts:
-                - { name: ncdata,  mountPath: /nc-data, readOnly: true }
-                - { name: backups, mountPath: /backups }
-                - { name: ssh,     mountPath: /ssh, readOnly: true }
+                # Read-write on purpose: sqlite3 .backup opens a read txn on
+                # the source and, in WAL mode, needs to touch -shm/-wal beside
+                # it. A readOnly mount fails with "unable to open database
+                # file". The snapshot itself is written to /tmp, never the PVC.
+                - { name: ncdata, mountPath: /nc-data }
           volumes:
             - name: ncdata
               persistentVolumeClaim: { claimName: nextcloud-data }
-            - name: backups
-              persistentVolumeClaim: { claimName: nextcloud-backups }
-            - name: ssh
-              secret: { secretName: backup-ssh, defaultMode: 0400 }

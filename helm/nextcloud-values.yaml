@@ -4,41 +4,71 @@ nginx:
   enabled: false
 
 nextcloud:
-  host: nextcloud.itguys.ro
+  host: cloud.itguys.ro
   existingSecret:
     enabled: true
     secretName: nextcloud-admin
     usernameKey: nextcloud-username
     passwordKey: nextcloud-password
   trustedDomains:
-    - nextcloud.itguys.ro
+    - cloud.itguys.ro
   extraEnv:
     - name: TRUSTED_PROXIES
       value: "10.42.0.0/16"          # in-cluster pod CIDR (front-proxy source)
     - name: OVERWRITEPROTOCOL
       value: "https"
     - name: OVERWRITEHOST
-      value: "nextcloud.itguys.ro"            # served on default :443 via proxy hostPort (Task 9)
+      value: "cloud.itguys.ro"            # served on default :443 via proxy hostPort (Task 9)
     - name: OVERWRITECLIURL
-      value: "https://nextcloud.itguys.ro"
+      value: "https://cloud.itguys.ro"
     - name: PHP_MEMORY_LIMIT
       value: "1024M"
     - name: PHP_UPLOAD_LIMIT
       value: "10G"
 
-internalDatabase:
-  enabled: false
+  # Primary storage is Cloudflare R2, not the PVC. User files live in the
+  # bucket; the PVC keeps only html/config/apps/themes and the SQLite DB.
+  #
+  # This CANNOT be added to a running install: objectstore is chosen at
+  # `occ maintenance:install` time and every file OID is bound to the backend
+  # that was active then. It has to be present before the installer first runs.
+  #
+  # `region: auto` is load-bearing. The chart defaults to eu-west-1 and the
+  # value is used for SigV4 signing; R2 accepts only auto, us-east-1 or empty,
+  # so the default fails every request with a signature error.
+  #
+  # `host` is the ACCOUNT endpoint, never bucket.<account>.r2... — Nextcloud
+  # builds the bucket into the path itself (usePathStyle).
+  objectStore:
+    s3:
+      enabled: true
+      host: "328c2ac1408b3260bb83a7735a7fafe8.r2.cloudflarestorage.com"
+      port: "443"
+      ssl: true
+      region: "auto"
+      bucket: "nextcloud-data"
+      usePathStyle: true
+      # The bucket already exists; letting Nextcloud CreateBucket would need a
+      # wider token than the bucket-scoped one this uses.
+      autoCreate: false
+      legacyAuth: false
+      storageClass: "STANDARD"
+      existingSecret: "nextcloud-r2"
+      secretKeys:
+        accessKey: "access-key-id"
+        secretKey: "secret-access-key"
 
-externalDatabase:
+# SQLite, not MariaDB. With file data in R2 (below) the database holds only
+# metadata, and a single file is something the nightly job can snapshot with
+# `sqlite3 .backup` and ship whole. The DB lands at data/nextcloud.db on the
+# nextcloud-data PVC.
+#
+# This is the `if` branch of the chart's database chain (_helpers.tpl), so it
+# wins outright — `externalDatabase` is not consulted at all once this is on,
+# and has been removed rather than left as dead config.
+internalDatabase:
   enabled: true
-  type: mysql
-  host: nextcloud-mariadb:3306
-  database: nextcloud
-  existingSecret:
-    enabled: true
-    secretName: nextcloud-db
-    usernameKey: db-username
-    passwordKey: db-password
+  name: nextcloud
 
 # Bundled bitnami subcharts OFF (we run standalone MariaDB + Valkey).
 mariadb:
@@ -57,6 +87,9 @@ externalRedis:
     secretName: valkey-auth
     passwordKey: redis-password
 
+# Still required, but no longer holds user files — those are in R2. What lives
+# here is the Nextcloud install itself (html/config/apps/themes) plus
+# data/nextcloud.db. Sized accordingly in manifests/50-nextcloud-pvcs.yaml.
 persistence:
   enabled: true
   existingClaim: nextcloud-data
