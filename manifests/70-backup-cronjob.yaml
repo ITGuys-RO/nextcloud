@@ -96,7 +96,18 @@ spec:
                   # invisible — `set -e` only sees the while loop's status — so
                   # retention would silently never run. `tail -n +N` is POSIX.
                   echo "[backup] pruning to newest $RETENTION"
-                  $MC ls "r2/$R2_BUCKET/db/" \
+
+                  # Capture the listing before piping it. This is `sh -eu` with
+                  # no pipefail, so `set -e` only ever observes the while loop's
+                  # status: a failed `mcli ls` (network blip, dead credential)
+                  # would yield an empty pipeline, delete nothing, and still
+                  # print "done" -- retention silently switched off behind a
+                  # green Job. Same silent-skip class as the GNU `head` issue
+                  # below, just one stage upstream.
+                  LIST=$($MC ls "r2/$R2_BUCKET/db/") \
+                    || { echo "FATAL: prune listing failed"; exit 1; }
+
+                  printf '%s\n' "$LIST" \
                     | awk '{print $NF}' \
                     | grep -E '^nextcloud-[0-9]{8}-[0-9]{6}\.db\.gz$' \
                     | sort -r \
