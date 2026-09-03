@@ -71,7 +71,6 @@ jobs:
               - '.github/workflows/deploy.yml'
             manifests:
               - 'manifests/*.yaml'
-              - '!manifests/60-nginx-tls-proxy.yaml'
       - id: chart
         run: |
           set -euo pipefail
@@ -168,10 +167,6 @@ jobs:
     # needs a namespace the deployer SA can read — either stamped in the file's
     # metadata or passed as `-n "${KUBE_NS}"`. Without it kubectl falls back to
     # the runner pod's own namespace (arc-runners), where the SA has no rights.
-    # manifests/60-nginx-tls-proxy.yaml is excluded on purpose — it is applied
-    # out-of-band (see CLAUDE.md), so it is not part of the CI-scoped manifest
-    # set.
-    #
     # Stays hand-written: deploy-k8s.yml applies for real and has no dry-run
     # mode, which is the right call for a deploy workflow and the wrong one for
     # a gate.

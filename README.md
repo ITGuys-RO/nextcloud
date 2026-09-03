@@ -18,7 +18,7 @@ manifests/bootstrap/ one-time, applied manually by cluster-admin (namespace, Clu
 secrets/             *.example templates only. Real values live in GitHub Actions Secrets.
 ```
 
-`manifests/60-nginx-tls-proxy.yaml` is **not CI-applied** — it's a historical baseline of the nextcloud-only vhost. The live proxy is a shared `:443` ingress serving 4 other apps; edit it out-of-band.
+TLS is terminated by `edge-proxy` (ns `ingress`, `k3s-cluster` repo), not in this namespace. Adding or renaming a vhost means editing it there.
 
 ## Secrets
 
