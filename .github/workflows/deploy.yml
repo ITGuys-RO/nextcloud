@@ -44,7 +44,7 @@ env:
 
 jobs:
   changes:
-    runs-on: arc-itguys-ro-nextcloud
+    runs-on: ubuntu-latest
     outputs:
       helm: ${{ steps.f.outputs.helm }}
       manifests: ${{ steps.f.outputs.manifests }}
@@ -192,7 +192,7 @@ jobs:
     needs: changes
     permissions:
       contents: read
-    uses: dustfeather/shared-workflows/.github/workflows/deploy-helm.yml@v7
+    uses: dustfeather/shared-workflows/.github/workflows/deploy-helm.yml@v8
     with:
       namespace: nextcloud
       release: nextcloud
@@ -211,7 +211,7 @@ jobs:
     if: ${{ needs.changes.outputs.manifests == 'true' || inputs.reconcile_all }}
     permissions:
       contents: read
-    uses: dustfeather/shared-workflows/.github/workflows/deploy-k8s.yml@v7
+    uses: dustfeather/shared-workflows/.github/workflows/deploy-k8s.yml@v8
     with:
       namespace: nextcloud
       runner: arc-itguys-ro-nextcloud
@@ -236,7 +236,7 @@ jobs:
     if: ${{ needs.changes.outputs.helm == 'true' || inputs.reconcile_all }}
     permissions:
       contents: read
-    uses: dustfeather/shared-workflows/.github/workflows/deploy-helm.yml@v7
+    uses: dustfeather/shared-workflows/.github/workflows/deploy-helm.yml@v8
     with:
       namespace: nextcloud
       release: nextcloud

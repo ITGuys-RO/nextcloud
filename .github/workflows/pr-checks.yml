@@ -8,7 +8,7 @@ on:
     # `closed` is in this list to cancel this workflow's own in-flight run when
     # the PR merges. A merge fires no `synchronize`, so without it nothing ever
     # re-enters the concurrency group below, and the review job keeps a
-    # self-hosted runner busy on a commit that is already history. Every job is
+    # runner busy on a commit that is already history. Every job is
     # gated off `closed`, so the run this creates does no work: it exists only
     # to claim the group and cancel its predecessor.
     types: [opened, synchronize, reopened, closed]
@@ -84,7 +84,5 @@ jobs:
       pull-requests: write
       issues: read
       id-token: write
-    uses: dustfeather/shared-workflows/.github/workflows/claude-code-review.yml@v7
-    with:
-      runner: arc-itguys-ro-nextcloud
+    uses: dustfeather/shared-workflows/.github/workflows/claude-code-review.yml@v8
     secrets: inherit
