@@ -28,7 +28,7 @@ spec:
         spec:
           restartPolicy: OnFailure
           nodeSelector:
-            kubernetes.io/hostname: acer-laptop
+            kubernetes.io/hostname: wsl
           containers:
             - name: backup
               image: alpine:3.21

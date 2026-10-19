@@ -14,7 +14,7 @@ spec:
       labels: { app: valkey }
     spec:
       nodeSelector:
-        kubernetes.io/hostname: acer-laptop
+        kubernetes.io/hostname: wsl
       containers:
         - name: valkey
           image: valkey/valkey:8-alpine

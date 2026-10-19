@@ -108,7 +108,7 @@ service:
 # holds, the node changed). asus-laptop was decommissioned 2026-08-08; acer is
 # now the only app node and the k3s control plane.
 nodeSelector:
-  kubernetes.io/hostname: acer-laptop
+  kubernetes.io/hostname: wsl
 
 startupProbe:
   enabled: true
