@@ -3,6 +3,12 @@
 nginx:
   enabled: false
 
+# Pinned ahead of the chart's appVersion (33.0.3, PHP 8.4.21): 33.0.11 ships
+# PHP 8.4.27, which fixes PHP2Shell (CVE-2026-109618/109619, unauthenticated
+# RCE, exploited in the wild). Bump with each PHP security release.
+image:
+  tag: 33.0.11-apache
+
 nextcloud:
   host: cloud.itguys.ro
   existingSecret:
@@ -12,6 +18,13 @@ nextcloud:
     passwordKey: nextcloud-password
   trustedDomains:
     - cloud.itguys.ro
+  # PHP security release 2026-11-19 (CVE-2026-115560 et al.): PHP's interim
+  # mitigation is to turn session upload progress off. Nextcloud uploads in
+  # chunks and never reads upload-progress data, so nothing depends on it.
+  # Keep until the image ships the patched PHP, then drop.
+  phpConfigs:
+    zz-security-mitigations.ini: |
+      session.upload_progress.enabled = 0
   extraEnv:
     - name: TRUSTED_PROXIES
       value: "10.42.0.0/16"          # in-cluster pod CIDR (front-proxy source)
