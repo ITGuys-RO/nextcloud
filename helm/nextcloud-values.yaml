@@ -6,9 +6,9 @@ nginx:
 # Pinned by digest: upstream re-pushes the same tag on base-image rebuilds, and
 # with IfNotPresent a bare tag would keep the old layers on the node.
 # Majors upgrade ONE AT A TIME (Nextcloud refuses to skip one): 33 -> 34 -> 35.
-# 34.0.6 ships PHP 8.5.12 (fixes PHP2Shell, CVE-2026-109618/109619).
+# 35.0.3 ships PHP 8.5.12 (fixes PHP2Shell, CVE-2026-109618/109619).
 image:
-  tag: 34.0.6-apache@sha256:3031e7f87baaceb863a755921ebf463bc26ea71855c07ad7858e2ae25a5a0ad7
+  tag: 35.0.3-apache@sha256:8a7a65b8bae82a79568fec2ed9cf3e374a1944eda2a22ebe130d79463336fee3
 
 nextcloud:
   host: cloud.itguys.ro
