@@ -32,3 +32,23 @@ It is in git history if it is ever needed.
   RoleBinding in ns `nextcloud`, plus `cf-token-rotator` SA + ClusterRole +
   RoleBinding in ns `cert-manager`, plus the ARC runner SA impersonation
   binding.
+
+## Restore after a failed upgrade
+
+A Nextcloud upgrade migrates the database AND rewrites the code plus
+`config/config.php` (`version`) on the `nextcloud-data` PVC; the previous image
+then refuses to start ("data version higher than image"). Rolling back takes
+all three:
+
+1. Scale down: `kubectl -n nextcloud scale deploy/nextcloud --replicas=0`.
+2. Database: copy the pre-upgrade snapshot `r2/nextcloud-data/db/<ts>.db.gz`,
+   gunzip, and replace `/var/www/html/data/nextcloud.db` on the PVC (from a
+   throwaway pod mounting `nextcloud-data`). Check `pragma integrity_check`.
+3. `config/config.php`: restore the copy saved before the upgrade (it holds
+   `instanceid`, `secret`, `passwordsalt`; never regenerate those).
+4. Image: set `image.tag` back to the previous digest in
+   `helm/nextcloud-values.yaml` and push. The entrypoint re-syncs the code on
+   the PVC from the image when the versions match.
+
+Take a manual snapshot first (`kubectl -n nextcloud create job <name>
+--from=cronjob/nextcloud-backup`); note each one prunes the oldest nightly.

@@ -76,7 +76,7 @@ jobs:
           set -euo pipefail
           {
             echo "chart=nextcloud/nextcloud"
-            echo "version=9.1.0"
+            echo "version=9.4.5"
             echo "repo-url=https://nextcloud.github.io/helm/"
           } >> "$GITHUB_OUTPUT"
 
@@ -246,7 +246,13 @@ jobs:
       values-files: helm/nextcloud-values.yaml
       runner: arc-itguys-ro-nextcloud
       setup-kubectl: true
-      atomic: true
-      helm-timeout: 5m
+      # Not atomic: a Nextcloud upgrade migrates the database in the entrypoint,
+      # and the previous image refuses to start on a newer schema, so an
+      # automatic rollback turns a slow upgrade into a crash-looping outage.
+      # A failed release stays failed for a human to look at; restore is the
+      # nightly R2 sqlite snapshot.
+      atomic: false
+      # Generous: a major upgrade (occ upgrade) runs before Apache listens.
+      helm-timeout: 15m
       rollout-targets: deploy/nextcloud
-      rollout-timeout: 5m
+      rollout-timeout: 15m

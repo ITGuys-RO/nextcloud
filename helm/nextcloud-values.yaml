@@ -3,11 +3,12 @@
 nginx:
   enabled: false
 
-# Pinned ahead of the chart's appVersion (33.0.3, PHP 8.4.21): 33.0.11 ships
-# PHP 8.4.27, which fixes PHP2Shell (CVE-2026-109618/109619, unauthenticated
-# RCE, exploited in the wild). Bump with each PHP security release.
+# Pinned by digest: upstream re-pushes the same tag on base-image rebuilds, and
+# with IfNotPresent a bare tag would keep the old layers on the node.
+# Majors upgrade ONE AT A TIME (Nextcloud refuses to skip one): 33 -> 34 -> 35.
+# 34.0.6 ships PHP 8.5.12 (fixes PHP2Shell, CVE-2026-109618/109619).
 image:
-  tag: 33.0.11-apache
+  tag: 34.0.6-apache@sha256:3031e7f87baaceb863a755921ebf463bc26ea71855c07ad7858e2ae25a5a0ad7
 
 nextcloud:
   host: cloud.itguys.ro
@@ -125,6 +126,9 @@ nodeSelector:
 
 startupProbe:
   enabled: true
+  # A major upgrade runs `occ upgrade` in the entrypoint before Apache listens.
+  # The chart default (30 x 10s) can kill the pod mid-migration; allow ~15 min.
+  failureThreshold: 90
 
 # No memory limit: PHP_MEMORY_LIMIT=1024M per worker; burst is acceptable on
 # asus (single/small-team use). Add limits.memory if the node shows OOM pressure.
