@@ -28,7 +28,7 @@ spec:
         spec:
           restartPolicy: OnFailure
           nodeSelector:
-            kubernetes.io/hostname: wsl
+            kubernetes.io/hostname: dustypc
           containers:
             - name: backup
               image: alpine:3.21
